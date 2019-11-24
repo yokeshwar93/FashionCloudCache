@@ -3,6 +3,9 @@ const router = express.Router()
 const CacheSchema = require('../models/cacheSchema')
 const randomstring = require('randomstring');
 
+const maxSize = 10 //Max size of cache is assumed to be 100
+const TTL = 86400000 //Time to Live assumed to be 24 hours
+
 // Get all keys
 router.get('/getAllKeys', async (req, res) => {
     try {
@@ -18,14 +21,14 @@ router.get('/getAllKeys', async (req, res) => {
 // Get data from specific key
 router.get('/getByKey/:key', async(req, res) => {
     try {
-        const cacheData = await CacheSchema.find({key: req.params.key}).select('data -_id')
+        const cacheData = await CacheSchema.find({key: req.params.key}).select('data -_id');
         const response = {};
-        if(cacheData.length >0) {
+        if(cacheData.length > 0 && new Date().valueOf() - cacheData[0].updatedOn > TTL) {
+            console.log('Cache hit')
             cacheData[0].updatedOn = new Date().valueOf();
             const updatedEntity = await cacheData[0].save()
             response.data = cacheData[0].data,
             response.status= true
-            console.log('Cache hit')
         } else {
             console.log('Cache miss')
             const key = randomstring.generate({
@@ -35,6 +38,7 @@ router.get('/getByKey/:key', async(req, res) => {
               const cacheEntity = new CacheSchema({
                 key: key,
               })
+              checkCacheSizeAndRemove();
               const newEntity = await cacheEntity.save()
               response.key = key;
               response.status = true;
@@ -52,12 +56,18 @@ router.post('/add', async (req, res) => {
         data: req.body.data
       })
       try {
-        const newEntity = await cacheEntity.save();
-        const response = {
-            key: newEntity.key,
-            data: newEntity.data
+        const cacheData = await CacheSchema.find({key: cacheEntity.key});
+        if(cacheData.length > 0) {
+            res.status(200).json({message: 'Key already present in the cache'});
+        } else {
+            checkCacheSizeAndRemove();
+            const newEntity = await cacheEntity.save();
+            const response = {
+                key: newEntity.key,
+                data: newEntity.data
+            }
+            res.status(201).json(newEntity)
         }
-        res.status(201).json(newEntity)
       } catch (err) {
         res.status(400).json({ message: err.message })
       }
@@ -67,7 +77,7 @@ router.post('/add', async (req, res) => {
 router.put('/update/:key', async (req, res) => {
     try {
         const cacheData = await CacheSchema.find({key: req.params.key});
-        if(cacheData.length >0) {
+        if(cacheData.length > 0) {
             cacheData[0].data = req.body.data;
             cacheData[0].updatedOn = new Date().valueOf();
             const updatedEntity = await cacheData[0].save();
@@ -106,4 +116,21 @@ router.delete('/deleteAllKeys', async(req, res) => {
       }
 })
 
+//Funtion to check if the cache size is breached & remove keys if needed
+//The most least updated key will be removed from the cache if the cache size exceeds the limit
+async function checkCacheSizeAndRemove() {
+    try{
+        const cache = await CacheSchema.find({}).sort({updatedOn: 1});
+        if(cache.length < maxSize) {
+            return true;
+        } else {
+            await CacheSchema.deleteOne({key: cache[0].key});
+            return true;
+        }
+    } catch(err) {
+        console.log(err.message);
+        return false;
+
+    }
+}
 module.exports = router
